@@ -1,0 +1,32 @@
+{
+  "name": "buyer-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot with registration/approval workflow, admin panel, MongoDB, Redis and BullMQ",
+  "main": "dist/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@grammyjs/conversations": "^2.0.1",
+    "@grammyjs/storage-redis": "^2.4.2",
+    "bullmq": "^5.12.15",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.28.0",
+    "ioredis": "^5.4.1",
+    "mongoose": "^8.5.3",
+    "pino": "^9.3.2",
+    "pino-pretty": "^11.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "tsx": "^4.16.5",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,101 @@
+services:
+  mongo:
+    image: mongo:4.4
+    restart: unless-stopped
+    # порт НЕ пробрасывается наружу — доступен только внутри docker-сети
+    expose:
+      - "27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: buyer-bot
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - internal
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/buyer-bot?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      ADMIN_IDS: ${ADMIN_IDS}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      AIO_API_TOKEN: ${AIO_API_TOKEN}
+      AIO_API_BASE_URL: https://app.aio.tech/api/v1
+      NODE_ENV: production
+    networks:
+      - internal
+    # у бота нет входящих HTTP-портов (телеграм — polling/webhook исходящий),
+    # поэтому портов наружу вообще нет. Если используете webhook — добавьте
+    # отдельный reverse-proxy (nginx/traefik) с TLS, а не голый порт бота
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # true — если приложение не пишет на диск, кроме tmp
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  redis-data:

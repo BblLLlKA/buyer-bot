@@ -173,3 +173,28 @@ export function searchUsers(query: string) {
   }
   return User.find({ $or: orConditions }).limit(10);
 }
+
+export interface UserProfileLean {
+  telegramId: number;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  aioUserUUID: string | null;
+}
+
+/**
+ * Same lookup as `searchUsers`, but returns plain objects instead of
+ * Mongoose documents — safe to hand to `conversation.external()`, which
+ * clones its return value via `structuredClone` (Mongoose documents/arrays
+ * aren't cloneable, see aioUuidForUserConversation for the same fix).
+ */
+export async function searchUserProfiles(query: string): Promise<UserProfileLean[]> {
+  const docs = await searchUsers(query);
+  return docs.map((d) => ({
+    telegramId: d.telegramId,
+    username: d.username ?? null,
+    firstName: d.firstName ?? null,
+    lastName: d.lastName ?? null,
+    aioUserUUID: d.aioUserUUID ?? null,
+  }));
+}

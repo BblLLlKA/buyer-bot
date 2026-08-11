@@ -7,12 +7,12 @@ import { sessionMiddleware } from "../middlewares/session";
 import { userStatusMiddleware } from "../middlewares/userStatus";
 import { adminOnly } from "../middlewares/adminOnly";
 import { startHandler } from "../handlers/start";
+import { menuMainHandler, menuAboutHandler, noopHandler } from "../handlers/mainMenuCallbacks";
 import {
-  menuMainHandler,
-  menuAboutHandler,
   menuLinkDomainsHandler,
-  noopHandler,
-} from "../handlers/mainMenuCallbacks";
+  linkDomainsSelfHandler,
+  linkDomainsOtherHandler,
+} from "../handlers/linkDomainsCallbacks";
 import { registrationDecisionHandler, registrationApproveHandler } from "../handlers/registrationCallbacks";
 import {
   adminListHandler,
@@ -35,6 +35,10 @@ import {
   domainCampaignConversation,
   DOMAIN_CAMPAIGN_CONVERSATION_NAME,
 } from "../conversations/domainCampaignConversation";
+import {
+  domainCampaignForUserConversation,
+  DOMAIN_CAMPAIGN_FOR_USER_CONVERSATION_NAME,
+} from "../conversations/domainCampaignForUserConversation";
 
 export function createBot(): Bot<MyContext> {
   const bot = new Bot<MyContext>(env.botToken);
@@ -44,6 +48,7 @@ export function createBot(): Bot<MyContext> {
   bot.use(createConversation(aioUuidConversation, AIO_UUID_CONVERSATION_NAME));
   bot.use(createConversation(aioUuidForUserConversation, AIO_UUID_FOR_USER_CONVERSATION_NAME));
   bot.use(createConversation(domainCampaignConversation, DOMAIN_CAMPAIGN_CONVERSATION_NAME));
+  bot.use(createConversation(domainCampaignForUserConversation, DOMAIN_CAMPAIGN_FOR_USER_CONVERSATION_NAME));
 
   bot.use(userStatusMiddleware);
 
@@ -52,6 +57,8 @@ export function createBot(): Bot<MyContext> {
   bot.callbackQuery("menu:main", menuMainHandler);
   bot.callbackQuery("menu:about", menuAboutHandler);
   bot.callbackQuery("menu:linkDomains", menuLinkDomainsHandler);
+  bot.callbackQuery("admin:linkDomains:self", adminOnly, linkDomainsSelfHandler);
+  bot.callbackQuery("admin:linkDomains:other", adminOnly, linkDomainsOtherHandler);
   bot.callbackQuery("noop", noopHandler);
 
   // Admin reacting to a registration card. Restricted to admins as

@@ -152,8 +152,22 @@ UUID теперь вводит **сам админ**, а не заявитель
 ### Привязка доменов к кампаниям
 
 Кнопка "🔗 Подключить домен к кампании" в главном меню доступна покупателю,
-у которого уже есть `aioUserUUID`. Диалог `domainCampaignConversation`
-(`src/conversations/domainCampaignConversation.ts`):
+у которого уже есть `aioUserUUID`, и всегда доступна админу (он получает
+`aioUserUUID` ещё до того, как видит главное меню — см. выше). Для покупателя
+кнопка сразу ведёт в диалог сбора кампаний/доменов; у админа сначала
+появляется выбор (`src/screens/linkDomainsChoice.ts`):
+
+- **🙋 За себя** — то же самое, что у покупателя, только с `aioUserUUID`
+  самого админа (`linkDomainsSelfHandler`).
+- **👤 За другого пользователя** — диалог `domainCampaignForUserConversation`
+  (`src/conversations/domainCampaignForUserConversation.ts`) сначала просит
+  username/ID нужного пользователя (поиск через `searchUserProfiles`, с
+  переспросом при 0/несколько совпадений или если у найденного пользователя
+  ещё нет `aioUserUUID`), а затем продолжает тем же общим сценарием.
+
+Сам сценарий сбора кампаний/доменов вынесен в отдельную переиспользуемую
+функцию `collectAndQueueDomainCampaignPairs` (`src/conversations/domainCampaignConversation.ts`),
+которую вызывают оба пути — и "за себя", и "за другого пользователя":
 
 1. Просит список ID кампаний (через запятую или с новой строки).
 2. Просит столько же доменов, в том же порядке; при несовпадении количества
@@ -161,14 +175,21 @@ UUID теперь вводит **сам админ**, а не заявитель
 3. На каждую пару `{campaignId, domain}` отправляет отдельное сообщение со
    статусом и ставит отдельную задачу в очередь `domain-campaign-linking`.
 
+Во всех случаях прогресс-сообщения приходят **в чат того, кто ведёт диалог**
+(админу), даже когда используется `aioUserUUID` другого пользователя.
+
 Воркер (`src/queues/domainCampaignWorker.ts`) на каждом шаге редактирует то
 самое сообщение, дописывая строку статуса: поиск кампании → проверка
-владельца (`campaign.owner.uuid === user.aioUserUUID`) → поиск домена →
-привязка через AIO `Domain\Edit`. Бизнес-отказы (кампания/домен не найдены,
-кампания чужая, `Domain\Edit` не подтвердил успех) — это **финальный**
-статус, job завершается штатно и не ретраится. Ретраится только реальная
-ошибка обращения к AIO API (`attempts: 3`, экспоненциальный backoff) — на
-последней попытке сообщение помечается как "❌ Техническая ошибка".
+владельца (`campaign.owner.uuid === aioUserUUID`) → поиск домена → привязка
+через AIO `Domain\Edit`. Бизнес-отказы (кампания/домен не найдены, кампания
+чужая, не хватает `owner`/`_identity` в ответе AIO, `Domain\Edit` не
+подтвердил успех) — это **финальный** статус, job завершается штатно и не
+ретраится. Если у кампании нет `detectedSource` (AIO ещё не определил
+источник трафика) — это не отказ, а просто используется дефолтный
+`sourceUuid` (константа в `domainCampaignWorker.ts`). Ретраится только
+реальная ошибка обращения к AIO API (`attempts: 3`, экспоненциальный
+backoff) — на последней попытке сообщение помечается как "❌ Техническая
+ошибка".
 
 Вся работа с AIO API вынесена в `src/services/aioApi.ts`
 (`findCampaignById`, `findDomainByName`, `linkDomainToCampaign`) — HTTP,
@@ -182,6 +203,23 @@ UUID теперь вводит **сам админ**, а не заявитель
 backoff) при сбоях Telegram API. `domain-campaign-linking`
 (`src/queues/domainCampaignQueue.ts`) работает по тому же принципу для
 привязки доменов (см. выше).
+
+### Ловушка: `ctx.auth` и `conversation.external()` внутри диалогов
+
+Две вещи, о которых легко забыть при добавлении новых `conversations/*.ts`:
+
+- **`ctx.conversation.enter()` не переносит кастомные поля контекста.**
+  Внутрь диалога попадают только `update`/`api`/`me` — `ctx.auth`
+  (выставляется `userStatusMiddleware`) там `undefined`. Всё, что нужно
+  диалогу из внешнего контекста (роль, `aioUserUUID` и т.п.), нужно прочитать
+  в обработчике **до** `enter()` и передать аргументом (так делают
+  `linkDomainsCallbacks.ts`, `registrationApproveHandler`).
+- **`conversation.external()` клонирует возвращаемое значение через
+  `structuredClone`.** Mongoose-документы, `DocumentArray` и BullMQ `Job` —
+  не клонируются, конкретно даёт `DataCloneError`. Внутри `external()` нужно
+  возвращать заранее собранный plain-object (см. `toPlainRegistrationCardUser`
+  в `src/services/registrationCards.ts`, `searchUserProfiles`/`UserProfileLean`
+  в `src/services/userService.ts`), а не документ/результат запроса как есть.
 
 ## Известные упрощения
 

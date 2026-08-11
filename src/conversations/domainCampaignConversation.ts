@@ -13,16 +13,31 @@ function parseList(text: string): string[] {
 }
 
 /**
- * Collects a list of campaign IDs and an equal-length list of domains, pairs
- * them up by index, and queues one BullMQ job per pair — each job gets its
- * own progress message that the worker edits step by step.
+ * "Link my own domains" entry point — buyers and admins both use this
+ * directly with their own aioUserUUID. Admins linking on behalf of another
+ * user go through domainCampaignForUserConversation instead, which looks up
+ * the target and then calls collectAndQueueDomainCampaignPairs below.
  *
- * `aioUserUUID` is passed in by the caller (menuLinkDomainsHandler) rather
- * than read from `ctx.auth` here: entering a conversation only carries
- * `update`/`api`/`me` from the outer ctx, so custom properties like
- * `ctx.auth` aren't available inside.
+ * `aioUserUUID` is passed in by the caller rather than read from `ctx.auth`
+ * here: entering a conversation only carries `update`/`api`/`me` from the
+ * outer ctx, so custom properties like `ctx.auth` aren't available inside.
  */
 export async function domainCampaignConversation(
+  conversation: MyConversation,
+  ctx: MyContext,
+  aioUserUUID: string,
+): Promise<void> {
+  await collectAndQueueDomainCampaignPairs(conversation, ctx, aioUserUUID);
+}
+
+/**
+ * Collects a list of campaign IDs and an equal-length list of domains, pairs
+ * them up by index, and queues one BullMQ job per pair — each job gets its
+ * own progress message that the worker edits step by step. Progress
+ * messages always land in `ctx`'s own chat (the person running the
+ * conversation), even when `aioUserUUID` belongs to someone else.
+ */
+export async function collectAndQueueDomainCampaignPairs(
   conversation: MyConversation,
   ctx: MyContext,
   aioUserUUID: string,

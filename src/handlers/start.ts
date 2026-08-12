@@ -4,6 +4,9 @@ import { enqueueAdminNotification } from "../queues/notifyQueue";
 import { renderMainMenu } from "../screens/mainMenu";
 import { renderScreen } from "../utils/safeEdit";
 import { AIO_UUID_CONVERSATION_NAME } from "../conversations/aioUuidConversation";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "handler:start" });
 
 export async function startHandler(ctx: MyContext): Promise<void> {
   const from = ctx.from;
@@ -16,7 +19,10 @@ export async function startHandler(ctx: MyContext): Promise<void> {
     lastName: from.last_name,
   });
 
+  log.debug({ telegramId: from.id, created, status: user.status }, "/start handled");
+
   if (created) {
+    log.info({ telegramId: from.id, username: from.username }, "New registration request created");
     await ctx.reply("📝 Заявка отправлена, ожидайте подтверждения администратора.");
     await enqueueAdminNotification({
       telegramId: user.telegramId,

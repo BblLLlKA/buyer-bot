@@ -22,10 +22,12 @@
     "ioredis": "^5.4.1",
     "mongoose": "^8.5.3",
     "pino": "^9.3.2",
-    "pino-pretty": "^11.2.2"
+    "pino-pretty": "^11.2.2",
+    "xml2js": "^0.6.2"
   },
   "devDependencies": {
     "@types/node": "^20.14.15",
+    "@types/xml2js": "^0.4.14",
     "tsx": "^4.16.5",
     "typescript": "^5.5.4"
   }

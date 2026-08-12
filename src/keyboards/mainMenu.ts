@@ -10,6 +10,7 @@ export function buildMainMenuKeyboard(role: UserRole, hasAioUuid: boolean): Inli
     keyboard.row().text("🔗 Подключить домен к кампании", "menu:linkDomains");
   }
   if (role === "admin") {
+    keyboard.row().text("🛒 Купить домены", "menu:buyDomains");
     keyboard.row().text("🛠 Админ-панель", "admin:list:all:0");
   }
   return keyboard;

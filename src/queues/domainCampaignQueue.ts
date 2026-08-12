@@ -1,5 +1,8 @@
 import { Queue } from "bullmq";
 import { bullRedis } from "../db/redis";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "queue" });
 
 export const DOMAIN_CAMPAIGN_QUEUE = "domain-campaign-linking";
 
@@ -25,5 +28,6 @@ export const domainCampaignQueue = new Queue<DomainCampaignJobData>(DOMAIN_CAMPA
 });
 
 export function enqueueDomainCampaignLink(data: DomainCampaignJobData) {
+  log.debug({ campaignId: data.campaignId, domain: data.domain }, "Enqueuing domain-campaign link job");
   return domainCampaignQueue.add("link-domain-campaign", data);
 }

@@ -3,6 +3,9 @@ import type { MyContext } from "../types";
 import { searchUsers } from "../services/userService";
 import { renderUserCard } from "../screens/userCard";
 import { renderAdminUserList } from "../screens/adminUserList";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "handler:search" });
 
 /**
  * The one deliberate exception to "inline buttons only": while
@@ -18,6 +21,7 @@ export async function adminSearchTextHandler(ctx: MyContext): Promise<void> {
   if (!query) return;
 
   const results = await searchUsers(query);
+  log.debug({ adminId: ctx.from?.id, query, resultCount: results.length }, "Admin searched for a user");
 
   if (results.length === 0) {
     await ctx.reply("Пользователь не найден.");

@@ -1,6 +1,8 @@
 import { env } from "../config/env";
 import { logger } from "../config/logger";
 
+const log = logger.child({ module: "service:aioApi" });
+
 // Fixed monitoring-user UUID required by the AIO Domain\Edit action; not
 // specific to any of our users (the per-user identity is `launcher` inside
 // default_query below), so it's kept as a constant rather than per-call input.
@@ -33,7 +35,8 @@ interface AioTableSearchRequest {
 
 async function aioRequest<T>(path: string, body: unknown): Promise<T> {
   const url = `${env.aioApiBaseUrl}${path}`;
-  logger.debug({ url, body }, "AIO API request");
+  log.debug({ url, body }, "AIO API request");
+  const startedAt = Date.now();
 
   let res: Response;
   try {
@@ -42,11 +45,14 @@ async function aioRequest<T>(path: string, body: unknown): Promise<T> {
       headers: {
         "Content-Type": "application/json",
         Cookie: `token=${env.aioApiToken}`,
+        // Avoids reusing a pooled keep-alive socket the server already
+        // closed — see the same fix in namecheapApi.ts for the failure mode.
+        Connection: "close",
       },
       body: JSON.stringify(body),
     });
   } catch (err) {
-    logger.error({ err, url }, "AIO API request failed (network error)");
+    log.error({ err, url, durationMs: Date.now() - startedAt }, "AIO API request failed (network error)");
     throw err;
   }
 
@@ -58,12 +64,14 @@ async function aioRequest<T>(path: string, body: unknown): Promise<T> {
     // leave json as the raw text; caller-side parsing below will just find nothing
   }
 
+  const durationMs = Date.now() - startedAt;
+
   if (!res.ok) {
-    logger.error({ url, status: res.status, response: json }, "AIO API returned a non-OK status");
+    log.error({ url, status: res.status, response: json, durationMs }, "AIO API returned a non-OK status");
     throw new Error(`AIO API ${path} failed with status ${res.status}`);
   }
 
-  logger.debug({ url, response: json }, "AIO API response");
+  log.debug({ url, response: json, durationMs }, "AIO API response");
   return json as T;
 }
 
@@ -164,4 +172,83 @@ export async function linkDomainToCampaign(params: LinkDomainToCampaignParams): 
 
   const json = await aioRequest<DomainEditResponse>("/actions/process", body);
   return json.messages?.[0]?.message === "Domain Edited" || Boolean(json.primary);
+}
+
+export interface ServerRow {
+  server: { uuid: string } | null;
+}
+
+/** Looks up an AIO server by IP; returns its UUID, or null if none matches. */
+export async function findServerByIp(ip: string): Promise<string | null> {
+  const json = await aioRequest<unknown>("/tables/data", tableSearchBody("MTK\\Settings\\Servers", ip));
+  const rows = extractRows(json, "MTK\\Settings\\Servers");
+  const server = (rows[0] as unknown as ServerRow | undefined)?.server;
+  return server?.uuid ?? null;
+}
+
+interface DomainCreateManuallyResponse {
+  messages?: { type: number; title: string; message: string; data: unknown }[];
+  primary?: string;
+  validation_errors?: Record<string, string[]>;
+}
+
+export type CreateDomainManuallyResult = { success: true } | { success: false; error: string };
+
+/**
+ * Registers an already-purchased domain in AIO against a server. Unlike
+ * every other AIO call here, this action's real request is multipart
+ * form-data rather than JSON, so it doesn't go through aioRequest().
+ */
+export async function createDomainManually(params: { domain: string; serverUuid: string }): Promise<CreateDomainManuallyResult> {
+  const form = new FormData();
+  form.append("action", "Domain\\CreateManually");
+  form.append("repository", "Eloquent\\DomainRepository");
+  form.append("arguments[server_uuids][0]", params.serverUuid);
+  form.append("arguments[dns_provider_uuid]", env.aioDnsProviderUuid);
+  form.append("arguments[monitoring_user_uuid]", env.aioMonitoringUserUuid);
+  form.append("arguments[settings]", JSON.stringify({ robots: { allow: false } }));
+  form.append("arguments[domain_url]", params.domain);
+
+  const url = `${env.aioApiBaseUrl}/actions/process`;
+  log.debug({ url, domain: params.domain }, "AIO API request (Domain\\CreateManually)");
+  const startedAt = Date.now();
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { Cookie: `token=${env.aioApiToken}`, Connection: "close" },
+      body: form,
+    });
+  } catch (err) {
+    log.error({ err, url, durationMs: Date.now() - startedAt }, "AIO API request failed (network error)");
+    throw err;
+  }
+
+  const raw = await res.text();
+  let json: unknown = raw;
+  try {
+    json = raw ? JSON.parse(raw) : undefined;
+  } catch {
+    // leave json as raw text
+  }
+
+  const durationMs = Date.now() - startedAt;
+
+  if (!res.ok) {
+    log.error({ url, status: res.status, response: json, durationMs }, "AIO API returned a non-OK status");
+    throw new Error(`AIO API /actions/process failed with status ${res.status}`);
+  }
+
+  log.debug({ url, response: json, durationMs }, "AIO API response");
+  const parsed = json as DomainCreateManuallyResponse;
+
+  if (parsed.validation_errors) {
+    const [firstField] = Object.keys(parsed.validation_errors);
+    const error = firstField ? parsed.validation_errors[firstField][0] : "Ошибка валидации AIO";
+    return { success: false, error };
+  }
+
+  const success = parsed.messages?.[0]?.message === "Domain Edited" || Boolean(parsed.primary);
+  return success ? { success: true } : { success: false, error: "AIO не подтвердил добавление домена" };
 }

@@ -1,6 +1,9 @@
 import type { NextFunction } from "grammy";
 import type { MyContext } from "../types";
 import { getUserByTelegramId } from "../services/userService";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "middleware:auth" });
 
 /**
  * Resolves the caller's DB record on every update and gates access:
@@ -20,6 +23,7 @@ export async function userStatusMiddleware(ctx: MyContext, next: NextFunction): 
   const user = await getUserByTelegramId(telegramId);
 
   if (!user) {
+    log.debug({ telegramId }, "Unregistered user blocked, pointed at /start");
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({ text: "Начните с команды /start.", show_alert: true }).catch(() => {});
     } else {
@@ -36,6 +40,7 @@ export async function userStatusMiddleware(ctx: MyContext, next: NextFunction): 
   };
 
   if (user.status === "awaiting_uuid") {
+    log.debug({ telegramId }, "Blocked update: user is awaiting_uuid");
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({ text: "Заявка подтверждена и обрабатывается администратором.", show_alert: true }).catch(() => {});
     } else {
@@ -45,6 +50,7 @@ export async function userStatusMiddleware(ctx: MyContext, next: NextFunction): 
   }
 
   if (user.status === "banned") {
+    log.debug({ telegramId }, "Blocked update: user is banned");
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({ text: "Вы заблокированы.", show_alert: true }).catch(() => {});
     } else {
@@ -54,6 +60,7 @@ export async function userStatusMiddleware(ctx: MyContext, next: NextFunction): 
   }
 
   if (user.status === "pending") {
+    log.debug({ telegramId }, "Blocked update: user is pending");
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({ text: "Ваша заявка ещё на рассмотрении.", show_alert: true }).catch(() => {});
     } else {
@@ -63,6 +70,7 @@ export async function userStatusMiddleware(ctx: MyContext, next: NextFunction): 
   }
 
   if (user.status === "rejected") {
+    log.debug({ telegramId }, "Blocked update: user is rejected");
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery({ text: "Ваша заявка отклонена.", show_alert: true }).catch(() => {});
     } else {
@@ -71,5 +79,6 @@ export async function userStatusMiddleware(ctx: MyContext, next: NextFunction): 
     return;
   }
 
+  log.debug({ telegramId, role: user.role }, "Update authorized");
   return next();
 }

@@ -3,6 +3,9 @@ import { renderScreen } from "../utils/safeEdit";
 import { renderLinkDomainsChoice } from "../screens/linkDomainsChoice";
 import { DOMAIN_CAMPAIGN_CONVERSATION_NAME } from "../conversations/domainCampaignConversation";
 import { DOMAIN_CAMPAIGN_FOR_USER_CONVERSATION_NAME } from "../conversations/domainCampaignForUserConversation";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "handler:link-domains" });
 
 // ctx.conversation.enter() only carries `update`/`api`/`me` into the
 // conversation — custom properties like ctx.auth (set by
@@ -11,9 +14,11 @@ import { DOMAIN_CAMPAIGN_FOR_USER_CONVERSATION_NAME } from "../conversations/dom
 async function enterOwnDomainCampaignConversation(ctx: MyContext): Promise<void> {
   const aioUserUUID = ctx.auth?.aioUserUUID;
   if (!aioUserUUID) {
+    log.warn({ telegramId: ctx.from?.id }, "Blocked domain-campaign linking — no AIO UUID yet");
     await ctx.reply("Сначала завершите регистрацию, указав AIO UUID.");
     return;
   }
+  log.debug({ telegramId: ctx.from?.id }, "Entering domain-campaign conversation (own account)");
   await ctx.conversation.enter(DOMAIN_CAMPAIGN_CONVERSATION_NAME, aioUserUUID);
 }
 
@@ -40,5 +45,6 @@ export async function linkDomainsSelfHandler(ctx: MyContext): Promise<void> {
 
 export async function linkDomainsOtherHandler(ctx: MyContext): Promise<void> {
   await ctx.answerCallbackQuery();
+  log.debug({ adminId: ctx.from?.id }, "Entering domain-campaign conversation (on behalf of another user)");
   await ctx.conversation.enter(DOMAIN_CAMPAIGN_FOR_USER_CONVERSATION_NAME);
 }

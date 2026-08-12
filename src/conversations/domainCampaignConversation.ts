@@ -1,16 +1,13 @@
 import type { MyContext, MyConversation } from "../types";
 import { enqueueDomainCampaignLink } from "../queues/domainCampaignQueue";
+import { parseList } from "../utils/parseList";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "conversation:domain-campaign" });
 
 export const DOMAIN_CAMPAIGN_CONVERSATION_NAME = "domainCampaignConversation";
 
 const MAX_DOMAIN_RETRIES = 5;
-
-function parseList(text: string): string[] {
-  return text
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
 
 /**
  * "Link my own domains" entry point — buyers and admins both use this
@@ -42,11 +39,15 @@ export async function collectAndQueueDomainCampaignPairs(
   ctx: MyContext,
   aioUserUUID: string,
 ): Promise<void> {
+  const telegramId = ctx.from?.id;
+  log.debug({ telegramId, aioUserUUID }, "Started domain-campaign collection");
+
   await ctx.reply("Введите ID кампаний — каждый с новой строки или через запятую:");
   const campaignsCtx = await conversation.waitFor("message:text");
   const campaignIds = parseList(campaignsCtx.message.text);
 
   if (campaignIds.length === 0) {
+    log.debug({ telegramId }, "No campaign IDs parsed, aborting");
     await campaignsCtx.reply("Не удалось распознать ни одного ID кампании. Начните заново из главного меню.");
     return;
   }
@@ -64,6 +65,7 @@ export async function collectAndQueueDomainCampaignPairs(
 
     attempts += 1;
     if (attempts >= MAX_DOMAIN_RETRIES) {
+      log.debug({ telegramId, attempts }, "Domain list retries exhausted, aborting");
       await domainsCtx.reply("Слишком много неудачных попыток. Операция отменена, начните заново из главного меню.");
       return;
     }
@@ -94,5 +96,6 @@ export async function collectAndQueueDomainCampaignPairs(
     });
   }
 
+  log.info({ telegramId, aioUserUUID, pairCount: pairs.length }, "Queued domain-campaign linking jobs");
   await ctx.reply(`Поставлено в очередь задач: ${pairs.length}. Статус будет обновляться в сообщениях выше.`);
 }

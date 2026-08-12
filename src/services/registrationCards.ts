@@ -1,6 +1,10 @@
 import type { Api } from "grammy";
 import { User, type UserStatus } from "../models/User";
 import { renderRegistrationCard, REGISTRATION_STATUS_LABELS } from "../screens/registrationCard";
+import { adminLabel } from "../utils/userLabel";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "service:registration-cards" });
 
 export interface RegistrationCardUser {
   telegramId: number;
@@ -31,11 +35,6 @@ export function toPlainRegistrationCardUser(user: RegistrationCardUser): Registr
     processedBy: user.processedBy ?? null,
     notifiedAdmins: [...(user.notifiedAdmins ?? [])].map((e) => ({ adminId: e.adminId, messageId: e.messageId })),
   };
-}
-
-function adminLabel(admin: { id: number; username?: string | null } | null, fallbackId: number): string {
-  if (admin?.username) return `@${admin.username}`;
-  return `ID ${admin?.id ?? fallbackId}`;
 }
 
 /** Builds the "processed by X" label shown once a registration card is resolved. */
@@ -84,14 +83,20 @@ export async function syncRegistrationCards(
     processedByLabel,
   });
 
+  log.debug(
+    { telegramId: user.telegramId, status: user.status, cardCount: user.notifiedAdmins?.length ?? 0 },
+    "Syncing registration cards across admins",
+  );
+
   for (const entry of user.notifiedAdmins ?? []) {
     try {
       await api.editMessageText(entry.adminId, entry.messageId, text, {
         reply_markup: keyboard,
         parse_mode: "HTML",
       });
-    } catch {
+    } catch (err) {
       // The admin's message may have been deleted or the bot blocked — safe to ignore.
+      log.debug({ err, adminId: entry.adminId, telegramId: user.telegramId }, "Failed to sync one registration card");
     }
   }
 }

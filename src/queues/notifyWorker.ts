@@ -1,11 +1,13 @@
 import { Worker, type Job } from "bullmq";
 import type { Api } from "grammy";
 import { bullRedis } from "../db/redis";
-import { logger } from "../config/logger";
+import { logger, withJobId } from "../config/logger";
 import { getAdminTelegramIds } from "../services/adminService";
 import { addNotifiedAdmin } from "../services/userService";
 import { renderRegistrationCard } from "../screens/registrationCard";
 import { ADMIN_NOTIFY_QUEUE, type AdminNotifyJobData } from "./notifyQueue";
+
+const log = logger.child({ module: "worker:notify" });
 
 /**
  * Broadcasts a "new registration" card to every approved admin. Runs off the
@@ -15,31 +17,34 @@ import { ADMIN_NOTIFY_QUEUE, type AdminNotifyJobData } from "./notifyQueue";
 export function createNotifyWorker(api: Api): Worker<AdminNotifyJobData> {
   return new Worker<AdminNotifyJobData>(
     ADMIN_NOTIFY_QUEUE,
-    async (job: Job<AdminNotifyJobData>) => {
-      const { telegramId, username, firstName, lastName, createdAtIso } = job.data;
-      const adminIds = await getAdminTelegramIds();
-
-      const { text, keyboard } = renderRegistrationCard({
-        telegramId,
-        username,
-        firstName,
-        lastName,
-        createdAt: new Date(createdAtIso),
-        status: "pending",
-      });
-
-      for (const adminId of adminIds) {
-        try {
-          const message = await api.sendMessage(adminId, text, {
-            reply_markup: keyboard,
-            parse_mode: "HTML",
-          });
-          await addNotifiedAdmin(telegramId, adminId, message.message_id);
-        } catch (err) {
-          logger.warn({ err, adminId }, "Failed to notify admin about new registration");
-        }
-      }
-    },
+    (job: Job<AdminNotifyJobData>) => withJobId(job.id ?? "unknown", () => processNotifyJob(api, job)),
     { connection: bullRedis },
   );
+}
+
+async function processNotifyJob(api: Api, job: Job<AdminNotifyJobData>): Promise<void> {
+  const { telegramId, username, firstName, lastName, createdAtIso } = job.data;
+  const adminIds = await getAdminTelegramIds();
+  log.debug({ telegramId, adminCount: adminIds.length }, "Broadcasting new registration to admins");
+
+  const { text, keyboard } = renderRegistrationCard({
+    telegramId,
+    username,
+    firstName,
+    lastName,
+    createdAt: new Date(createdAtIso),
+    status: "pending",
+  });
+
+  for (const adminId of adminIds) {
+    try {
+      const message = await api.sendMessage(adminId, text, {
+        reply_markup: keyboard,
+        parse_mode: "HTML",
+      });
+      await addNotifiedAdmin(telegramId, adminId, message.message_id);
+    } catch (err) {
+      log.warn({ err, adminId }, "Failed to notify admin about new registration");
+    }
+  }
 }

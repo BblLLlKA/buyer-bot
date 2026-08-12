@@ -1,6 +1,9 @@
 import { GrammyError } from "grammy";
 import type { InlineKeyboard } from "grammy";
 import type { MyContext } from "../types";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "utils:safeEdit" });
 
 export interface RenderedScreen {
   text: string;
@@ -30,13 +33,16 @@ export async function renderScreen(ctx: MyContext, screen: RenderedScreen): Prom
       if (err instanceof GrammyError) {
         const description = err.description ?? "";
         if (IGNORABLE_EDIT_ERRORS.some((m) => description.includes(m))) {
+          log.debug({ description }, "renderScreen: ignored a no-op edit error");
           return;
         }
         if (FALLBACK_TO_NEW_MESSAGE_ERRORS.some((m) => description.includes(m))) {
+          log.debug({ description }, "renderScreen: falling back to a new message");
           await ctx.reply(text, { reply_markup: keyboard, parse_mode: "HTML" });
           return;
         }
       }
+      log.error({ err }, "renderScreen: unexpected error editing message");
       throw err;
     }
   }

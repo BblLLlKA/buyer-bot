@@ -3,7 +3,11 @@ import { resolveRegistration } from "../services/userService";
 import { syncRegistrationCards, processedByLabelFor, foldInActingMessage } from "../services/registrationCards";
 import { REGISTRATION_STATUS_LABELS } from "../screens/registrationCard";
 import { User, type UserStatus } from "../models/User";
+import { parseTargetId } from "../utils/callbackData";
+import { adminLabel } from "../utils/userLabel";
 import { logger } from "../config/logger";
+
+const log = logger.child({ module: "handler:registration" });
 import { AIO_UUID_FOR_USER_CONVERSATION_NAME } from "../conversations/aioUuidForUserConversation";
 
 type FinalDecision = "reject" | "ban";
@@ -17,15 +21,6 @@ const USER_MESSAGES: Record<FinalDecision, string> = {
   reject: "❌ Ваша заявка была отклонена.",
   ban: "🚫 Вы были заблокированы администратором.",
 };
-
-function adminLabelOf(admin: { id: number; username?: string }): string {
-  return admin.username ? `@${admin.username}` : `ID ${admin.id}`;
-}
-
-function parseTargetId(data: string): number | null {
-  const id = Number(data.split(":")[2]);
-  return Number.isInteger(id) ? id : null;
-}
 
 /** Handles the "❌ Отклонить" / "🚫 Забанить" buttons — final, one-shot decisions. */
 export function registrationDecisionHandler(decision: FinalDecision) {
@@ -45,6 +40,10 @@ export function registrationDecisionHandler(decision: FinalDecision) {
     const updated = await resolveRegistration(targetId, nextStatus, admin.id);
 
     if (!updated) {
+      log.debug(
+        { adminId: admin.id, targetId, decision },
+        "Registration decision lost the race — request was already processed",
+      );
       await ctx.answerCallbackQuery({ text: "Заявка уже обработана.", show_alert: true });
       const current = await User.findOne({ telegramId: targetId });
       if (current) {
@@ -54,9 +53,10 @@ export function registrationDecisionHandler(decision: FinalDecision) {
       return;
     }
 
+    log.info({ adminId: admin.id, targetId, decision }, "Admin resolved a registration request");
     await ctx.answerCallbackQuery({ text: "Готово" });
 
-    const processedByLabel = `${REGISTRATION_STATUS_LABELS[nextStatus]} — ${adminLabelOf(admin)}`;
+    const processedByLabel = `${REGISTRATION_STATUS_LABELS[nextStatus]} — ${adminLabel(admin, admin.id)}`;
 
     // Sync every admin's copy of the card (including this one) so nobody
     // else can try to process an already-resolved request.
@@ -79,7 +79,7 @@ export function registrationDecisionHandler(decision: FinalDecision) {
     try {
       await ctx.api.sendMessage(updated.telegramId, USER_MESSAGES[decision]);
     } catch (err) {
-      logger.warn({ err, telegramId: updated.telegramId }, "Failed to notify user about registration decision");
+      log.warn({ err, telegramId: updated.telegramId }, "Failed to notify user about registration decision");
     }
   };
 }
@@ -104,6 +104,10 @@ export async function registrationApproveHandler(ctx: MyContext): Promise<void> 
   const updated = await resolveRegistration(targetId, "awaiting_uuid", admin.id);
 
   if (!updated) {
+    log.debug(
+      { adminId: admin.id, targetId },
+      "Registration approval lost the race — request was already processed",
+    );
     await ctx.answerCallbackQuery({ text: "Заявка уже обработана.", show_alert: true });
     const current = await User.findOne({ telegramId: targetId });
     if (current) {
@@ -113,9 +117,10 @@ export async function registrationApproveHandler(ctx: MyContext): Promise<void> 
     return;
   }
 
+  log.info({ adminId: admin.id, targetId }, "Admin approved a registration request, awaiting AIO UUID");
   await ctx.answerCallbackQuery();
 
-  const processedByLabel = `${REGISTRATION_STATUS_LABELS.awaiting_uuid} — ${adminLabelOf(admin)}`;
+  const processedByLabel = `${REGISTRATION_STATUS_LABELS.awaiting_uuid} — ${adminLabel(admin, admin.id)}`;
   const notifiedAdmins = foldInActingMessage(updated, ctx.chat?.id, ctx.callbackQuery?.message?.message_id);
   await syncRegistrationCards(
     ctx.api,

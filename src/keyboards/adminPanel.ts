@@ -2,7 +2,8 @@ import { InlineKeyboard } from "grammy";
 import type { AdminUserFilter } from "../types";
 import type { UserHydrated } from "../services/userService";
 
-const FILTER_LABELS: Record<AdminUserFilter, string> = {
+/** Shared with screens/adminUserList.ts — one source of truth for filter labels. */
+export const FILTER_LABELS: Record<AdminUserFilter, string> = {
   all: "Все",
   pending: "Ожидают",
   awaiting_uuid: "Ждут UUID",

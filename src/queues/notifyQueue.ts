@@ -1,5 +1,8 @@
 import { Queue } from "bullmq";
 import { bullRedis } from "../db/redis";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "queue" });
 
 export const ADMIN_NOTIFY_QUEUE = "admin-notify";
 
@@ -22,5 +25,6 @@ export const notifyQueue = new Queue<AdminNotifyJobData>(ADMIN_NOTIFY_QUEUE, {
 });
 
 export function enqueueAdminNotification(data: AdminNotifyJobData) {
+  log.debug({ telegramId: data.telegramId }, "Enqueuing admin-notify job");
   return notifyQueue.add("notify-new-registration", data);
 }

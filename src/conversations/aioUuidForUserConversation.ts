@@ -12,23 +12,19 @@ import {
   type RegistrationCardUser,
 } from "../services/registrationCards";
 import { renderMainMenu } from "../screens/mainMenu";
+import { isValidUuid, normalizeUuid } from "../utils/uuid";
+import { describeUser } from "../utils/userLabel";
 import { logger } from "../config/logger";
 
-export const AIO_UUID_FOR_USER_CONVERSATION_NAME = "aioUuidForUserConversation";
+const log = logger.child({ module: "conversation:aio-uuid" });
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const AIO_UUID_FOR_USER_CONVERSATION_NAME = "aioUuidForUserConversation";
 
 interface PlainProfile {
   telegramId: number;
   username: string | null;
   firstName: string | null;
   lastName: string | null;
-}
-
-function describeUser(user: PlainProfile | null, telegramId: number): string {
-  if (user?.username) return `@${user.username}`;
-  const name = [user?.firstName, user?.lastName].filter(Boolean).join(" ");
-  return name || `ID ${telegramId}`;
 }
 
 /**
@@ -48,6 +44,7 @@ export async function aioUuidForUserConversation(
   targetTelegramId: number,
 ): Promise<void> {
   const adminTelegramId = ctx.from!.id;
+  log.debug({ adminTelegramId, targetTelegramId }, "Started aioUuidForUserConversation");
 
   const target = await conversation.external<PlainProfile | null>(async () => {
     const doc = await getUserByTelegramId(targetTelegramId);
@@ -81,25 +78,33 @@ export async function aioUuidForUserConversation(
       next: true,
     });
 
-    const text = current.message.text.trim();
+    const rawText = current.message.text.trim();
 
-    if (text === "/cancel") {
+    if (rawText === "/cancel") {
       const reverted = await conversation.external<RegistrationCardUser | null>(async () => {
         const doc = await revertToPending(targetTelegramId, adminTelegramId);
         return doc ? toPlainRegistrationCardUser(doc) : null;
       });
       if (reverted) await syncRegistrationCards(ctx.api, reverted);
+      log.info({ adminTelegramId, targetTelegramId }, "Admin cancelled AIO UUID entry, request reverted to pending");
       await current.reply("Отменено. Заявка возвращена в очередь ожидания подтверждения.");
       return;
     }
 
-    if (!UUID_REGEX.test(text)) {
+    if (!isValidUuid(rawText)) {
       pendingConfirmUuid = null;
       await current.reply("❌ Неверный формат UUID. Попробуйте снова или отправьте /cancel:");
       continue;
     }
 
-    const isConfirmingSameUuid = pendingConfirmUuid !== null && text.toLowerCase() === pendingConfirmUuid.toLowerCase();
+    // Normalized once here so every downstream comparison/save (conflict
+    // lookup, re-confirmation, the saved aioUserUUID itself) is
+    // case-insensitive — AIO's own UUIDs come back lowercase, so an admin
+    // typing e.g. uppercase would otherwise silently mismatch later. See
+    // AUDIT.md 1.1 #2.
+    const text = normalizeUuid(rawText);
+
+    const isConfirmingSameUuid = pendingConfirmUuid !== null && text === pendingConfirmUuid;
 
     if (!isConfirmingSameUuid) {
       const conflict = await conversation.external<PlainProfile | null>(async () => {
@@ -114,6 +119,10 @@ export async function aioUuidForUserConversation(
       });
       if (conflict) {
         pendingConfirmUuid = text;
+        log.debug(
+          { adminTelegramId, targetTelegramId, conflictTelegramId: conflict.telegramId },
+          "AIO UUID already used by another Telegram account, asking admin to confirm",
+        );
         const conflictLabel = describeUser(conflict, conflict.telegramId);
         await current.reply(
           `⚠️ Этот AIO UUID уже привязан к пользователю ${conflictLabel}. Если это ожидаемо (один AIO-аккаунт на несколько Telegram-аккаунтов), ` +
@@ -128,10 +137,12 @@ export async function aioUuidForUserConversation(
       return doc ? toPlainRegistrationCardUser(doc) : null;
     });
     if (!approved) {
+      log.warn({ adminTelegramId, targetTelegramId }, "Failed to save AIO UUID — request already resolved elsewhere");
       await current.reply("Не удалось сохранить UUID — заявка уже была обработана или отменена кем-то ещё.");
       return;
     }
 
+    log.info({ adminTelegramId, targetTelegramId }, "Registration approved with AIO UUID");
     const processedByLabel = await conversation.external(() => processedByLabelFor(approved));
     await syncRegistrationCards(ctx.api, approved, processedByLabel);
     await current.reply(`✅ AIO UUID сохранён, заявка пользователя ${label} подтверждена.`);
@@ -144,7 +155,7 @@ export async function aioUuidForUserConversation(
         { reply_markup: menu.keyboard, parse_mode: "HTML" },
       );
     } catch (err) {
-      logger.warn({ err, telegramId: targetTelegramId }, "Failed to notify user about registration approval");
+      log.warn({ err, telegramId: targetTelegramId }, "Failed to notify user about registration approval");
     }
     return;
   }

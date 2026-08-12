@@ -1,5 +1,9 @@
 import { User, type UserDoc, type UserStatus } from "../models/User";
 import type { HydratedDocument } from "mongoose";
+import { escapeRegExp } from "../utils/escapeRegExp";
+import { logger } from "../config/logger";
+
+const log = logger.child({ module: "service:user" });
 
 export type UserHydrated = HydratedDocument<UserDoc>;
 
@@ -47,6 +51,7 @@ export async function findOrCreateUser(profile: TelegramProfile): Promise<FindOr
 
   // upsert always returns a doc; created === it was just inserted (createdAt === updatedAt)
   const created = user.createdAt.getTime() === user.updatedAt.getTime();
+  log.debug({ telegramId: profile.telegramId, created }, "findOrCreateUser resolved");
   return { created, user };
 }
 
@@ -66,7 +71,7 @@ export async function resolveRegistration(
   nextStatus: Exclude<UserStatus, "pending">,
   processedBy: number,
 ): Promise<UserHydrated | null> {
-  return User.findOneAndUpdate(
+  const updated = await User.findOneAndUpdate(
     { telegramId, status: "pending" },
     {
       status: nextStatus,
@@ -75,10 +80,13 @@ export async function resolveRegistration(
     },
     { new: true },
   );
+  log.debug({ telegramId, nextStatus, processedBy, won: Boolean(updated) }, "resolveRegistration race attempt");
+  return updated;
 }
 
 /** Saves the AIO UUID without touching status (used for the admin flow). */
 export async function setAioUuid(telegramId: number, aioUserUUID: string) {
+  log.debug({ telegramId }, "Saving AIO UUID");
   return User.findOneAndUpdate({ telegramId }, { aioUserUUID }, { new: true });
 }
 
@@ -87,11 +95,13 @@ export async function setAioUuid(telegramId: number, aioUserUUID: string) {
  * `awaiting_uuid` to `approved` in one atomic write.
  */
 export async function approveWithAioUuid(telegramId: number, aioUserUUID: string) {
-  return User.findOneAndUpdate(
+  const updated = await User.findOneAndUpdate(
     { telegramId, status: "awaiting_uuid" },
     { aioUserUUID, status: "approved" },
     { new: true },
   );
+  log.debug({ telegramId, saved: Boolean(updated) }, "approveWithAioUuid attempt");
+  return updated;
 }
 
 /**
@@ -102,11 +112,13 @@ export async function approveWithAioUuid(telegramId: number, aioUserUUID: string
  * can't clobber someone else's in-progress request.
  */
 export async function revertToPending(telegramId: number, processedBy: number) {
-  return User.findOneAndUpdate(
+  const updated = await User.findOneAndUpdate(
     { telegramId, status: "awaiting_uuid", processedBy },
     { status: "pending", processedBy: null, processedAt: null },
     { new: true },
   );
+  log.info({ telegramId, processedBy, reverted: Boolean(updated) }, "Registration reverted to pending");
+  return updated;
 }
 
 /**
@@ -166,7 +178,7 @@ export async function listUsers({ filter, page, pageSize }: ListUsersOptions) {
 export function searchUsers(query: string) {
   const numeric = Number(query);
   const orConditions: Record<string, unknown>[] = [
-    { username: { $regex: query.replace(/^@/, ""), $options: "i" } },
+    { username: { $regex: escapeRegExp(query.replace(/^@/, "")), $options: "i" } },
   ];
   if (Number.isInteger(numeric)) {
     orConditions.push({ telegramId: numeric });

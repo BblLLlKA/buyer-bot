@@ -2,35 +2,45 @@
 
 Telegram-бот на grammY с регистрацией через подтверждение администратором,
 ролевой моделью (`buyer` / `admin`), сбором AIO UUID, привязкой доменов к
-кампаниям через AIO API, inline-меню в виде "экранов" и очередями на BullMQ.
+кампаниям через AIO API, покупкой доменов через Namecheap с автодобавлением
+в AIO, inline-меню в виде "экранов" и очередями на BullMQ.
+
+См. [`AUDIT.md`](./AUDIT.md) за результатами аудита кода: список найденных
+проблем по категориям (корректность, безопасность, производительность,
+качество кода), что из этого исправлено в коде, а что оставлено как
+осознанная рекомендация на будущее.
 
 ## Стек
 
 - Node.js 20+, TypeScript
 - [grammY](https://grammy.dev/) — Telegram Bot Framework
-- [@grammyjs/conversations](https://grammy.dev/plugins/conversations) — диалоги ввода AIO UUID и привязки доменов
+- [@grammyjs/conversations](https://grammy.dev/plugins/conversations) — диалоги ввода AIO UUID, привязки доменов и покупки доменов
 - MongoDB (Mongoose) — хранение пользователей
 - Redis — session-хранилище grammY (`@grammyjs/storage-redis`) и очереди BullMQ
-- BullMQ — асинхронная рассылка уведомлений админам и привязка доменов к кампаниям через AIO API
+- BullMQ — асинхронная рассылка уведомлений админам, привязка доменов к кампаниям и покупка доменов через AIO/Namecheap API
+- `xml2js` — разбор XML-ответов Namecheap API
 
 ## Структура проекта
 
 ```
 src/
   bot/            сборка Bot-инстанса, регистрация всех обработчиков
-  config/         env, логгер
-  conversations/  диалоги grammY: ввод AIO UUID, привязка доменов к кампаниям
+  config/         env, логгер, цены за домены по зонам
+  conversations/  диалоги grammY: ввод AIO UUID, привязка доменов к кампаниям, покупка доменов
   db/             подключения к MongoDB и Redis
   handlers/       обработчики команд и callback_query
   keyboards/      построение inline-клавиатур
   middlewares/    session, проверка статуса пользователя, admin-only
   models/         Mongoose-схемы
-  queues/         BullMQ очереди + воркеры (рассылка админам, привязка доменов)
+  queues/         BullMQ очереди + воркеры (рассылка админам, привязка доменов, покупка доменов)
   screens/        рендер текста + клавиатуры для каждого "экрана"
-  services/       бизнес-логика: пользователи, админы, карточки заявок, AIO API
+  services/       бизнес-логика: пользователи, админы, карточки заявок, AIO API, Namecheap API
   types/          типы сессии и контекста grammY (включая ConversationFlavor)
-  utils/          safeEdit — edit-or-reply с фолбэком
+  utils/          safeEdit (edit-or-reply с фолбэком), валидация доменов/IP/UUID, генератор
+                  доменов, парсинг списков, прогресс-сообщения воркеров, маскирование секретов
   index.ts        точка входа
+data/
+  domain-words.txt  словарь для генератора доменных имён (см. "Покупка доменов")
 ```
 
 ## Запуск через Docker Compose
@@ -68,9 +78,53 @@ npm run build && npm start
 | `LOG_LEVEL` | Уровень логирования pino (по умолчанию `info`)                   |
 | `AIO_API_BASE_URL` | Базовый URL AIO API (по умолчанию `https://app.aio.tech/api/v1`) |
 | `AIO_API_TOKEN` | JWT для авторизации в AIO API (используется как `Cookie: token=...`) |
+| `AIO_DNS_PROVIDER_UUID` | Фиксированный `dns_provider_uuid` для `Domain\CreateManually` (покупка доменов) |
+| `AIO_MONITORING_USER_UUID` | Фиксированный `monitoring_user_uuid` для `Domain\CreateManually` (покупка доменов) |
+| `NAMECHEAP_USERNAME` | Namecheap `ApiUser`/`UserName` |
+| `NAMECHEAP_API_KEY` | Namecheap `ApiKey` |
+| `NAMECHEAP_CLIENT_IP` | IP, добавленный в whitelist Namecheap API |
+| `NAMECHEAP_CONTACT_*` | Контакт Registrant/Tech/Admin/AuxBilling для регистрации домена (обязателен Namecheap-ом) |
+| `MAX_DOMAINS_PER_REQUEST` | Максимум доменов за один запрос генерации/ручного ввода (по умолчанию `50`) |
+| `DOMAIN_PRICE_COM` / `_INFO` / `_ORG` / `_DEFAULT` | Оценочная цена домена по зоне — используется только для быстрого отказа, если баланса аккаунта Namecheap явно не хватает |
 
 Без `AIO_API_TOKEN` бот полностью работоспособен — не заработает только
-привязка доменов к кампаниям (шаг 2 ниже).
+привязка доменов к кампаниям и покупка доменов (см. ниже). Без переменных
+`NAMECHEAP_*` не заработает только покупка доменов.
+
+## Логирование
+
+Структурированное логирование через [pino](https://getpino.io/)
+(`src/config/logger.ts`). В dev (`NODE_ENV !== production`) вывод идёт через
+`pino-pretty` (цветной, читаемый построчно); в production — чистый JSON в
+stdout, готовый к сбору любым log-шиппером (Loki, ELK, CloudWatch и т.п.).
+
+- **Уровень** — `LOG_LEVEL` в `.env` (`fatal|error|warn|info|debug|trace`,
+  по умолчанию `info`). Чтобы увидеть тела запросов/ответов AIO и Namecheap
+  API, все шаги диалогов и промежуточные значения — выставите `LOG_LEVEL=debug`
+  и перезапустите бота (`docker compose restart bot` или `npm run dev`).
+- **`module`** — у каждого логгера есть дочерний контекст по слою
+  (`logger.child({ module: '...' })`), например `handler:registration`,
+  `conversation:domain-purchase`, `service:aioApi`, `worker:domain-purchase`,
+  `middleware:auth`, `db`, `queue`. По этому полю удобно фильтровать вывод
+  (`| grep '"module":"worker:domain-purchase"'` или through jq).
+- **`requestId`** — на каждый Telegram-апдейт (значение — `update_id`),
+  автоматически попадает во все логи, порождённые обработкой этого апдейта
+  (включая вложенные вызовы сервисов), через `AsyncLocalStorage` + pino
+  `mixin`. Позволяет выцепить полный след одного нажатия кнопки/сообщения:
+  `| grep '"requestId":12345'`.
+- **`jobId`** — то же самое, но на каждую задачу BullMQ; позволяет собрать
+  все строки одного прогресс-сообщения воедино независимо от ретраев.
+- **`category: "billing"`** — стоит на логах, связанных с деньгами (проверка
+  баланса Namecheap, факт покупки домена, отказ по недостатку средств) —
+  отдельный признак для алертинга/аудита финансовых операций, не завязанный
+  на конкретный `module`.
+- **Маскирование** — pino `redact` (в `config/logger.ts`) вычищает поля вида
+  `*.token`/`*.apiKey`/`*.headers.Cookie` из любого залогированного объекта
+  на случай, если он туда попадёт целиком; `src/utils/maskSensitive.ts` — для
+  точечного маскирования строк (например, в тексте ошибки).
+- Необработанные ошибки вне `bot.catch()` (например, забытый `await`) ловятся
+  глобально в `src/index.ts` (`process.on('unhandledRejection'/'uncaughtException')`)
+  и тоже пишутся структурированным логом, а не голым stack trace в stderr.
 
 ## Ключевые решения
 
@@ -195,14 +249,80 @@ backoff) — на последней попытке сообщение поме�
 (`findCampaignById`, `findDomainByName`, `linkDomainToCampaign`) — HTTP,
 заголовки и логирование запросов/ответов не размазаны по воркеру.
 
+### Покупка доменов через Namecheap
+
+Кнопка "🛒 Купить домены" в главном меню видна только `admin`; коллбэк
+`menu:buyDomains` дополнительно защищён `adminOnly` на случай гонки при смене
+роли или устаревшего callback_data. `aioUserUUID`, от имени которого домены
+добавляются в AIO, берётся у инициирующего админа (тем же способом, что и в
+привязке доменов к кампаниям — читается из `ctx.auth` до входа в диалог и
+передаётся аргументом, см. "Ловушка" ниже).
+
+Диалог `buyDomainsConversation` (`src/conversations/buyDomainsConversation.ts`):
+
+1. Выбор способа — сгенерировать (`🎲`) или ввести вручную (`✏️`).
+2. **Генерация**: количество (лимит `MAX_DOMAINS_PER_REQUEST`) → зона
+   (`.com`/`.info`/`.org`/ввод вручную с валидацией формата) → генерация через
+   `src/utils/domainGenerator.ts` (портировано из `support-bot`'s
+   `generate-domains.js` — тот же словарь + слоги + суффиксы, тот же
+   алгоритм) → экран подтверждения списка с кнопками "✅ Подтвердить" /
+   "🔄 Сгенерировать заново" / "❌ Отмена" (в задании это было опциональным
+   UX-улучшением — решили оставить, чтобы админ не покупал домены вслепую).
+3. **Вручную**: список доменов через запятую/с новой строки (тот же парсер,
+   что и в привязке доменов к кампаниям), базовая валидация формата.
+4. Общий шаг — IP-адрес сервера (валидация IPv4 через `net.isIPv4`).
+5. На каждый домен отдельное сообщение "⏳ Задача поставлена в очередь..." и
+   отдельная задача в очереди `domain-purchase`
+   (`src/queues/domainPurchaseQueue.ts`), с ценой (`getDomainPrice`,
+   `src/config/domainPricing.ts`) уже посчитанной на момент постановки в
+   очередь — чтобы обработка не зависела от того, поменяется ли конфиг цен
+   к моменту, когда воркер доберётся до этой задачи.
+
+Воркер (`src/queues/domainPurchaseWorker.ts`) на каждом шаге редактирует то
+самое сообщение: баланс → покупка в Namecheap → поиск сервера в AIO по IP
+(`findServerByIp`) → добавление домена (`createDomainManually`, action
+`Domain\CreateManually`, единственный запрос к AIO в проекте, отправляемый
+как `multipart/form-data`, а не JSON, — см. `src/services/aioApi.ts`).
+Бизнес-отказы (баланс, домен занят, сервер не найден, `validation_errors` от
+AIO) — финальный статус, без ретрая. Ретраится только сетевая/HTTP-ошибка
+Namecheap или AIO (`attempts: 3`, экспоненциальный backoff).
+
+**Баланс — это реальный баланс аккаунта Namecheap** (`namecheap.users.getBalances`,
+`getAvailableBalance` в `src/services/namecheapApi.ts`), общий на все покупки,
+а не что-то, что бот считает сам за каждого админа отдельно (более раннее
+решение с полем `User.balance` было заменено на это). Цена из
+`DOMAIN_PRICE_*` — только локальная оценка для быстрого отказа до похода в
+Namecheap; реальная и авторитетная проверка — сам вызов покупки, который
+Namecheap отклонит с `NamecheapApiError`, если на счету действительно не
+хватает денег.
+
+Так как покупка домена, в отличие от привязки к кампании, не идемпотентна
+(нельзя купить один и тот же домен дважды), после успешной покупки в
+Namecheap воркер сохраняет `purchased: true` в данные задачи через
+`job.updateData(...)`. Если следующий шаг (поиск сервера или создание домена
+в AIO) упадёт с технической ошибкой и BullMQ повторит всю задачу —
+повторный запуск увидит `purchased: true` и не станет покупать домен ещё
+раз, сразу перейдёт к поиску сервера.
+
+Namecheap-клиент (`src/services/namecheapApi.ts`) портирован из
+`support-bot`'s `namecheap.service.js` — те же параметры авторизации
+(`ApiUser`/`ApiKey`/`UserName`/`ClientIp`), тот же разбор XML-ответа через
+`xml2js`. WhoisGuard намеренно никогда не включается (`WGEnabled` не
+передаётся) — в `support-bot` был фолбэк на повторную покупку без него при
+ошибке "не поддерживается для зоны", здесь эта ветка не нужна, так как
+WhoisGuard не запрашивается вообще. Внутренний слой retry/circuit-breaker из
+`support-bot` тоже не портировался — сетевые ретраи в этом проекте уже
+происходят на уровне BullMQ (см. выше), как и для AIO API.
+
 ### Очереди
 
 `enqueueAdminNotification` кладёт задачу в BullMQ вместо синхронной рассылки
 всем админам внутри обработчика `/start` — рассылка идёт в воркере
 (`src/queues/notifyWorker.ts`) с ретраями (`attempts: 5`, экспоненциальный
 backoff) при сбоях Telegram API. `domain-campaign-linking`
-(`src/queues/domainCampaignQueue.ts`) работает по тому же принципу для
-привязки доменов (см. выше).
+(`src/queues/domainCampaignQueue.ts`) и `domain-purchase`
+(`src/queues/domainPurchaseQueue.ts`) работают по тому же принципу для
+привязки и покупки доменов соответственно (см. выше).
 
 ### Ловушка: `ctx.auth` и `conversation.external()` внутри диалогов
 
@@ -237,3 +357,11 @@ backoff) при сбоях Telegram API. `domain-campaign-linking`
   через Mongo shell сбросить `status`/`processedBy`) или через `/cancel` от
   того же админа. Автоматического тайм-аута/эскалации на другого админа
   нет — потребует отдельной delayed-job в BullMQ.
+- Проверка баланса Namecheap перед покупкой — это только предварительный
+  отказ, не резервирование средств: если несколько доменов покупаются
+  параллельно на грани реального баланса, каждая задача независимо видит
+  "баланс достаточен", и лишь фактический вызов покупки в Namecheap
+  авторитетно решает, хватило ли денег (см. "Ключевые решения").
+- Namecheap-покупка домена не проверяется на доступность заранее — ошибка
+  "домен уже занят" всплывает только на шаге покупки и просто завершает
+  задачу как финальный отказ.

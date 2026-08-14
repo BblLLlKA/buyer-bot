@@ -11,6 +11,7 @@ export function buildMainMenuKeyboard(role: UserRole, hasAioUuid: boolean): Inli
   }
   if (role === "admin") {
     keyboard.row().text("🛒 Купить домены", "menu:buyDomains");
+    keyboard.row().text("📤 Загрузить вайты", "menu:uploadLanders");
     keyboard.row().text("🛠 Админ-панель", "admin:list:all:0");
   }
   return keyboard;

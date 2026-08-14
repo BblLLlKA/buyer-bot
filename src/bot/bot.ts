@@ -41,6 +41,8 @@ import {
 } from "../conversations/domainCampaignForUserConversation";
 import { buyDomainsConversation, BUY_DOMAINS_CONVERSATION_NAME } from "../conversations/buyDomainsConversation";
 import { menuBuyDomainsHandler } from "../handlers/buyDomainsCallbacks";
+import { landerUploadConversation, LANDER_UPLOAD_CONVERSATION_NAME } from "../conversations/landerUploadConversation";
+import { menuLanderUploadHandler } from "../handlers/landerUploadCallbacks";
 
 const log = logger.child({ module: "bot" });
 
@@ -84,6 +86,7 @@ export function createBot(): Bot<MyContext> {
   bot.use(createConversation(domainCampaignConversation, DOMAIN_CAMPAIGN_CONVERSATION_NAME));
   bot.use(createConversation(domainCampaignForUserConversation, DOMAIN_CAMPAIGN_FOR_USER_CONVERSATION_NAME));
   bot.use(createConversation(buyDomainsConversation, BUY_DOMAINS_CONVERSATION_NAME));
+  bot.use(createConversation(landerUploadConversation, LANDER_UPLOAD_CONVERSATION_NAME));
 
   bot.command("start", startHandler);
 
@@ -93,6 +96,7 @@ export function createBot(): Bot<MyContext> {
   bot.callbackQuery("admin:linkDomains:self", adminOnly, linkDomainsSelfHandler);
   bot.callbackQuery("admin:linkDomains:other", adminOnly, linkDomainsOtherHandler);
   bot.callbackQuery("menu:buyDomains", adminOnly, menuBuyDomainsHandler);
+  bot.callbackQuery("menu:uploadLanders", adminOnly, menuLanderUploadHandler);
   bot.callbackQuery("noop", noopHandler);
 
   // Admin reacting to a registration card. Restricted to admins as

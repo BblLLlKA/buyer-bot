@@ -65,6 +65,30 @@ export const env = {
     apiBaseUrl: process.env.CLOUDFLARE_API_BASE_URL ?? "https://api.cloudflare.com/client/v4",
   },
 
+  // Lander (whitepage) bulk-upload feature. Template/type UUIDs are fixed
+  // identifiers for the AIO Lander\Upload action — not tied to any specific
+  // admin/buyer, distinct from per-user UUIDs like aioUserUUID.
+  aioLanderTemplateUuid: process.env.AIO_LANDER_TEMPLATE_UUID ?? "",
+  aioLanderTypeUuid: process.env.AIO_LANDER_TYPE_UUID ?? "",
+  // Base URL of the object storage AIO's multipart-upload flow writes
+  // completed files to — used to build the zip_url passed to Lander\Upload.
+  // Kept configurable since it's DigitalOcean Spaces today but could differ
+  // per AIO environment/instance.
+  aioStorageBaseUrl: process.env.AIO_STORAGE_BASE_URL ?? "https://aio-tech.ams3.digitaloceanspaces.com",
+
+  maxLanderFiles: (() => {
+    const value = Number.parseInt(process.env.MAX_LANDER_FILES ?? "", 10);
+    return Number.isInteger(value) && value > 0 ? value : 20;
+  })(),
+  // NOTE: Telegram's Bot API only lets bots download files up to 20 MB
+  // regardless of this setting (a platform limit, not something this bot
+  // controls) — see README "Массовая загрузка вайтов" for the local
+  // Bot API server workaround if you genuinely need more than that.
+  maxLanderFileSizeMb: (() => {
+    const value = Number.parseInt(process.env.MAX_LANDER_FILE_SIZE_MB ?? "", 10);
+    return Number.isInteger(value) && value > 0 ? value : 25;
+  })(),
+
   maxDomainsPerRequest: (() => {
     const value = Number.parseInt(process.env.MAX_DOMAINS_PER_REQUEST ?? "", 10);
     return Number.isInteger(value) && value > 0 ? value : 50;

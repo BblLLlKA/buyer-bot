@@ -6,6 +6,8 @@ import { createBot } from "./bot/bot";
 import { createNotifyWorker } from "./queues/notifyWorker";
 import { createDomainCampaignWorker } from "./queues/domainCampaignWorker";
 import { createDomainPurchaseWorker } from "./queues/domainPurchaseWorker";
+import { createLanderUploadWorker } from "./queues/landerUploadWorker";
+import { cleanupStaleTempFiles } from "./utils/tmpStorage";
 
 const log = logger.child({ module: "startup" });
 
@@ -31,7 +33,10 @@ async function main() {
       aioApiBaseUrl: env.aioApiBaseUrl,
       aioApiTokenConfigured: Boolean(env.aioApiToken),
       namecheapConfigured: Boolean(env.namecheap.apiUser && env.namecheap.apiKey),
+      cloudflareConfigured: Boolean(env.cloudflare.apiToken),
+      landerUploadConfigured: Boolean(env.aioLanderTemplateUuid && env.aioLanderTypeUuid),
       maxDomainsPerRequest: env.maxDomainsPerRequest,
+      maxLanderFiles: env.maxLanderFiles,
     },
     "Starting buyer-bot",
   );
@@ -43,6 +48,7 @@ async function main() {
   const notifyWorker = createNotifyWorker(bot.api);
   const domainCampaignWorker = createDomainCampaignWorker(bot.api);
   const domainPurchaseWorker = createDomainPurchaseWorker(bot.api);
+  const landerUploadWorker = createLanderUploadWorker(bot.api);
 
   notifyWorker.on("failed", (job, err) => {
     log.error({ err, jobId: job?.id }, "Admin notify job failed");
@@ -53,14 +59,33 @@ async function main() {
   domainPurchaseWorker.on("failed", (job, err) => {
     log.error({ err, jobId: job?.id }, "Domain-purchase job failed");
   });
+  landerUploadWorker.on("failed", (job, err) => {
+    log.error({ err, jobId: job?.id }, "Lander-upload job failed");
+  });
+
+  // Fallback safety net for storage/tmp-uploads/: normal cleanup happens
+  // per-job in landerUploadWorker.ts, but a crashed process or a job lost
+  // from Redis would otherwise leave its archive on disk forever. Sweeps
+  // hourly, removing anything older than 6h (generous — jobs finish in
+  // minutes) rather than running on every job.
+  const TMP_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+  const TMP_FILE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  const tmpCleanupInterval = setInterval(() => {
+    cleanupStaleTempFiles(TMP_FILE_MAX_AGE_MS).catch((err) => {
+      log.error({ err }, "Stale temp upload cleanup sweep failed");
+    });
+  }, TMP_CLEANUP_INTERVAL_MS);
+  tmpCleanupInterval.unref();
 
   const shutdown = async () => {
     log.info("Shutting down...");
+    clearInterval(tmpCleanupInterval);
     await Promise.allSettled([
       bot.stop(),
       notifyWorker.close(),
       domainCampaignWorker.close(),
       domainPurchaseWorker.close(),
+      landerUploadWorker.close(),
     ]);
     process.exit(0);
   };

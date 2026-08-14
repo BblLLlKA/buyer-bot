@@ -60,6 +60,11 @@ export const env = {
     },
   },
 
+  cloudflare: {
+    apiToken: process.env.CLOUDFLARE_API_TOKEN ?? "",
+    apiBaseUrl: process.env.CLOUDFLARE_API_BASE_URL ?? "https://api.cloudflare.com/client/v4",
+  },
+
   maxDomainsPerRequest: (() => {
     const value = Number.parseInt(process.env.MAX_DOMAINS_PER_REQUEST ?? "", 10);
     return Number.isInteger(value) && value > 0 ? value : 50;

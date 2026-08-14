@@ -21,6 +21,11 @@ export interface DomainPurchaseJobData {
   // technical failure (AIO lookup/create) doesn't buy the domain a second
   // time — see domainPurchaseWorker.ts.
   purchased?: boolean;
+  // Set once the domain has been added to Cloudflare and its assigned
+  // nameservers have been written back to Namecheap, so a retry after a
+  // later technical failure (AIO lookup/create) doesn't redo the
+  // Cloudflare/Namecheap DNS step — see domainPurchaseWorker.ts.
+  nameservers?: string[];
 }
 
 export const domainPurchaseQueue = new Queue<DomainPurchaseJobData>(DOMAIN_PURCHASE_QUEUE, {

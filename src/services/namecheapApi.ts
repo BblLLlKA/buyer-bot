@@ -80,6 +80,15 @@ async function namecheapRequest(command: string, params: NamecheapRequestParams 
   return apiResponse as Record<string, unknown>;
 }
 
+/** Splits a domain into Namecheap's SLD/TLD params (e.g. "example.com" -> { SLD: "example", TLD: "com" }). */
+function parseDomain(domain: string): { SLD: string; TLD: string } {
+  const parts = domain.split(".");
+  if (parts.length < 2) {
+    throw new Error(`Invalid domain: ${domain}`);
+  }
+  return { SLD: parts.slice(0, -1).join("."), TLD: parts.slice(-1)[0] };
+}
+
 /** Purchases a domain. WhoisGuard is never enabled (no WGEnabled param sent). */
 export async function purchaseDomain(domain: string): Promise<void> {
   const contact = env.namecheap.contact;
@@ -108,6 +117,16 @@ export async function purchaseDomain(domain: string): Promise<void> {
   }
 
   await namecheapRequest("namecheap.domains.create", params);
+}
+
+/** Points a domain at a custom set of nameservers (e.g. the ones Cloudflare assigned its zone). */
+export async function setCustomDns(domain: string, nameservers: string[]): Promise<void> {
+  const { SLD, TLD } = parseDomain(domain);
+  await namecheapRequest("namecheap.domains.dns.setCustom", {
+    SLD,
+    TLD,
+    Nameservers: nameservers.join(","),
+  });
 }
 
 interface UserGetBalancesResult {

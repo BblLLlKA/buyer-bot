@@ -2,8 +2,9 @@
 
 Telegram-бот на grammY с регистрацией через подтверждение администратором,
 ролевой моделью (`buyer` / `admin`), сбором AIO UUID, привязкой доменов к
-кампаниям через AIO API, покупкой доменов через Namecheap с автодобавлением
-в AIO, inline-меню в виде "экранов" и очередями на BullMQ.
+кампаниям через AIO API, покупкой доменов через Namecheap с настройкой
+Cloudflare (зона + NS) и автодобавлением в AIO, inline-меню в виде "экранов"
+и очередями на BullMQ.
 
 См. [`AUDIT.md`](./AUDIT.md) за результатами аудита кода: список найденных
 проблем по категориям (корректность, безопасность, производительность,
@@ -17,7 +18,7 @@ Telegram-бот на grammY с регистрацией через подтве�
 - [@grammyjs/conversations](https://grammy.dev/plugins/conversations) — диалоги ввода AIO UUID, привязки доменов и покупки доменов
 - MongoDB (Mongoose) — хранение пользователей
 - Redis — session-хранилище grammY (`@grammyjs/storage-redis`) и очереди BullMQ
-- BullMQ — асинхронная рассылка уведомлений админам, привязка доменов к кампаниям и покупка доменов через AIO/Namecheap API
+- BullMQ — асинхронная рассылка уведомлений админам, привязка доменов к кампаниям и покупка доменов через AIO/Namecheap/Cloudflare API
 - `xml2js` — разбор XML-ответов Namecheap API
 
 ## Структура проекта
@@ -34,7 +35,8 @@ src/
   models/         Mongoose-схемы
   queues/         BullMQ очереди + воркеры (рассылка админам, привязка доменов, покупка доменов)
   screens/        рендер текста + клавиатуры для каждого "экрана"
-  services/       бизнес-логика: пользователи, админы, карточки заявок, AIO API, Namecheap API
+  services/       бизнес-логика: пользователи, админы, карточки заявок, AIO API, Namecheap API,
+                  Cloudflare API
   types/          типы сессии и контекста grammY (включая ConversationFlavor)
   utils/          safeEdit (edit-or-reply с фолбэком), валидация доменов/IP/UUID, генератор
                   доменов, парсинг списков, прогресс-сообщения воркеров, маскирование секретов
@@ -84,12 +86,17 @@ npm run build && npm start
 | `NAMECHEAP_API_KEY` | Namecheap `ApiKey` |
 | `NAMECHEAP_CLIENT_IP` | IP, добавленный в whitelist Namecheap API |
 | `NAMECHEAP_CONTACT_*` | Контакт Registrant/Tech/Admin/AuxBilling для регистрации домена (обязателен Namecheap-ом) |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API-токен с правом `Zone:Edit` (account-scoped token, не legacy global API key) |
+| `CLOUDFLARE_API_BASE_URL` | Базовый URL Cloudflare API (по умолчанию `https://api.cloudflare.com/client/v4`) |
 | `MAX_DOMAINS_PER_REQUEST` | Максимум доменов за один запрос генерации/ручного ввода (по умолчанию `50`) |
 | `DOMAIN_PRICE_COM` / `_INFO` / `_ORG` / `_DEFAULT` | Оценочная цена домена по зоне — используется только для быстрого отказа, если баланса аккаунта Namecheap явно не хватает |
 
 Без `AIO_API_TOKEN` бот полностью работоспособен — не заработает только
 привязка доменов к кампаниям и покупка доменов (см. ниже). Без переменных
-`NAMECHEAP_*` не заработает только покупка доменов.
+`NAMECHEAP_*` не заработает только покупка доменов. Без `CLOUDFLARE_API_TOKEN`
+покупка доменов будет доходить до шага "Добавление домена в Cloudflare" и
+падать на нём с явной ошибкой — Namecheap-покупка при этом уже состоится, так
+что не оставляйте эту переменную пустой, если фича включена.
 
 ## Логирование
 
@@ -279,13 +286,42 @@ backoff) — на последней попытке сообщение поме�
    к моменту, когда воркер доберётся до этой задачи.
 
 Воркер (`src/queues/domainPurchaseWorker.ts`) на каждом шаге редактирует то
-самое сообщение: баланс → покупка в Namecheap → поиск сервера в AIO по IP
-(`findServerByIp`) → добавление домена (`createDomainManually`, action
-`Domain\CreateManually`, единственный запрос к AIO в проекте, отправляемый
-как `multipart/form-data`, а не JSON, — см. `src/services/aioApi.ts`).
-Бизнес-отказы (баланс, домен занят, сервер не найден, `validation_errors` от
-AIO) — финальный статус, без ретрая. Ретраится только сетевая/HTTP-ошибка
-Namecheap или AIO (`attempts: 3`, экспоненциальный backoff).
+самое сообщение:
+
+1. 💳 Проверка баланса Namecheap.
+2. 🛒 Покупка домена в Namecheap.
+3. ☁️ Добавление домена в Cloudflare (`ensureZoneWithNameservers` в
+   `src/services/cloudflareApi.ts`) — создаёт zone и забирает назначенные
+   Cloudflare NS-серверы.
+4. 🔄 Прописывание этих NS-серверов в Namecheap для домена (`setCustomDns` в
+   `src/services/namecheapApi.ts`, команда `namecheap.domains.dns.setCustom`).
+5. 🔍 Поиск сервера в AIO по IP (`findServerByIp`).
+6. ➕ Добавление домена в AIO (`createDomainManually`, action
+   `Domain\CreateManually`, единственный запрос к AIO в проекте, отправляемый
+   как `multipart/form-data`, а не JSON, — см. `src/services/aioApi.ts`).
+
+Пример финального сообщения при успехе:
+
+```
+🌐 Домен: test21.com
+
+✅ Баланс Namecheap достаточен ($123.45)
+✅ Домен куплен в Namecheap
+✅ Домен добавлен в Cloudflare
+✅ NS-серверы обновлены в Namecheap (ns1.cloudflare.com, ns2.cloudflare.com)
+✅ Сервер найден в AIO
+✅ Домен успешно добавлен в AIO
+```
+
+Бизнес-отказы (баланс, домен занят, ошибка Cloudflare, домен уже
+зарегистрирован в Cloudflare на другом зонировании, ошибка `setCustom` в
+Namecheap, сервер не найден, `validation_errors` от AIO) — финальный статус,
+без ретрая; сообщение в каждом случае явно указывает, что из шагов 1–4 уже
+выполнено, а что нет (например: "домен куплен в Namecheap, но не настроен" —
+если упал шаг 3, или "домен куплен и добавлен в Cloudflare, но NS не
+обновлены — требуется ручная проверка" — если упал шаг 4). Ретраится только
+сетевая/HTTP-ошибка Namecheap, Cloudflare или AIO (`attempts: 3`,
+экспоненциальный backoff).
 
 **Баланс — это реальный баланс аккаунта Namecheap** (`namecheap.users.getBalances`,
 `getAvailableBalance` в `src/services/namecheapApi.ts`), общий на все покупки,
@@ -296,22 +332,43 @@ Namecheap; реальная и авторитетная проверка — с�
 Namecheap отклонит с `NamecheapApiError`, если на счету действительно не
 хватает денег.
 
-Так как покупка домена, в отличие от привязки к кампании, не идемпотентна
-(нельзя купить один и тот же домен дважды), после успешной покупки в
-Namecheap воркер сохраняет `purchased: true` в данные задачи через
-`job.updateData(...)`. Если следующий шаг (поиск сервера или создание домена
-в AIO) упадёт с технической ошибкой и BullMQ повторит всю задачу —
-повторный запуск увидит `purchased: true` и не станет покупать домен ещё
-раз, сразу перейдёт к поиску сервера.
+Так как покупка домена и его DNS-настройка не идемпотентны (нельзя купить
+один и тот же домен дважды; повторная настройка NS — не ошибка, но не нужна),
+воркер сохраняет прогресс в данные задачи через `job.updateData(...)`:
+`purchased: true` — сразу после успешной покупки в Namecheap; `nameservers`
+(сам список, полученный от Cloudflare) — сразу после того, как оба шага 3 и 4
+успешно завершились. Если следующий шаг упадёт с технической ошибкой и BullMQ
+повторит всю задачу, повторный запуск видит эти флаги и не повторяет уже
+выполненные шаги — сразу переходит к следующему.
+
+Отдельно от этого флага, сам шаг 3 идемпотентен и на уровне Cloudflare:
+`ensureZoneWithNameservers` сначала ищет зону по имени домена и только если
+её нет — создаёт; если создание всё же наткнётся на "zone already exists"
+(гонка между поиском и созданием, например из-за незакоммиченного
+предыдущего прогона той же job), эта конкретная ошибка не считается
+фатальной — воркер просто забирает NS уже существующей зоны и продолжает.
 
 Namecheap-клиент (`src/services/namecheapApi.ts`) портирован из
 `support-bot`'s `namecheap.service.js` — те же параметры авторизации
 (`ApiUser`/`ApiKey`/`UserName`/`ClientIp`), тот же разбор XML-ответа через
-`xml2js`. WhoisGuard намеренно никогда не включается (`WGEnabled` не
-передаётся) — в `support-bot` был фолбэк на повторную покупку без него при
-ошибке "не поддерживается для зоны", здесь эта ветка не нужна, так как
-WhoisGuard не запрашивается вообще. Внутренний слой retry/circuit-breaker из
-`support-bot` тоже не портировался — сетевые ретраи в этом проекте уже
+`xml2js`, а `setCustomDns` — то же самое, что `setCustomDns` в
+`support-bot`'s клиенте (команда `namecheap.domains.dns.setCustom`, домен
+разбирается на `SLD`/`TLD`). WhoisGuard намеренно никогда не включается
+(`WGEnabled` не передаётся) — в `support-bot` был фолбэк на повторную покупку
+без него при ошибке "не поддерживается для зоны", здесь эта ветка не нужна,
+так как WhoisGuard не запрашивается вообще.
+
+Cloudflare-клиент (`src/services/cloudflareApi.ts`) портирован из
+`support-bot`'s `cloudflare.service.js` — тот же bearer-токен
+(`CLOUDFLARE_API_TOKEN`, без account ID — эндпоинты `/zones` уже скопированы
+под сам токен) и тот же find-or-create-зона паттерн (`ensureZone` там →
+`ensureZoneWithNameservers` здесь). В отличие от `support-bot`, здесь **не**
+создаётся A-запись и не включается Always Use HTTPS — DNS-запись домена
+дальше настраивает AIO (шаг 6), Cloudflare в этом флоу нужен только чтобы
+получить его NS-серверы для Namecheap.
+
+Внутренний слой retry/circuit-breaker из `support-bot` (и для Namecheap, и
+для Cloudflare) не портировался — сетевые ретраи в этом проекте уже
 происходят на уровне BullMQ (см. выше), как и для AIO API.
 
 ### Очереди
